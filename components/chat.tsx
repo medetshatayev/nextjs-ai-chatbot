@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { ChatHeader } from '@/components/chat-header';
 import type { Vote } from '@/lib/db/schema';
-import { fetcher, fetchWithErrorHandlers, generateUUID } from '@/lib/utils';
+import { fetcher, fetchWithErrorHandlers, generateUUID, getTextFromMessage } from '@/lib/utils';
 import { Artifact } from './artifact';
 import { MultimodalInput } from './multimodal-input';
 import { Messages } from './messages';
@@ -49,6 +49,7 @@ export function Chat({
   const { setDataStream } = useDataStream();
 
   const [input, setInput] = useState<string>('');
+  const [documentId, setDocumentId] = useState<string | null>(null);
 
   const {
     messages,
@@ -64,16 +65,13 @@ export function Chat({
     experimental_throttle: 100,
     generateId: generateUUID,
     transport: new DefaultChatTransport({
-      api: '/api/chat',
+      api: '/api/rag/chat',
       fetch: fetchWithErrorHandlers,
-      prepareSendMessagesRequest({ messages, id, body }) {
+      prepareSendMessagesRequest({ messages }) {
         return {
           body: {
-            id,
-            message: messages.at(-1),
-            selectedChatModel: initialChatModel,
-            selectedVisibilityType: visibilityType,
-            ...body,
+            query: getTextFromMessage(messages.at(-1) as ChatMessage),
+            document_id: documentId,
           },
         };
       },
@@ -161,6 +159,7 @@ export function Chat({
               messages={messages}
               setMessages={setMessages}
               sendMessage={sendMessage}
+              onDocumentId={setDocumentId}
               selectedVisibilityType={visibilityType}
             />
           )}

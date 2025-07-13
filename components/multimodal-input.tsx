@@ -40,6 +40,7 @@ function PureMultimodalInput({
   messages,
   setMessages,
   sendMessage,
+  onDocumentId,
   className,
   selectedVisibilityType,
 }: {
@@ -53,6 +54,7 @@ function PureMultimodalInput({
   messages: Array<UIMessage>;
   setMessages: UseChatHelpers<ChatMessage>['setMessages'];
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
+  onDocumentId: (id: string) => void;
   className?: string;
   selectedVisibilityType: VisibilityType;
 }) {
@@ -151,19 +153,20 @@ function PureMultimodalInput({
     formData.append('file', file);
 
     try {
-      const response = await fetch('/api/files/upload', {
+      const response = await fetch('/api/rag/upload', {
         method: 'POST',
         body: formData,
       });
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType } = data;
+        const { document_id, filename } = data;
+        onDocumentId(document_id);
 
         return {
-          url,
-          name: pathname,
-          contentType: contentType,
+          url: `/api/rag/files/${document_id}`,
+          name: filename,
+          contentType: 'application/pdf',
         };
       }
       const { error } = await response.json();
