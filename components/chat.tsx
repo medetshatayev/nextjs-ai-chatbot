@@ -2,7 +2,7 @@
 
 import { DefaultChatTransport } from 'ai';
 import { useChat } from '@ai-sdk/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { ChatHeader } from '@/components/chat-header';
 import type { Vote } from '@/lib/db/schema';
@@ -49,6 +49,12 @@ export function Chat({
   const { setDataStream } = useDataStream();
 
   const [input, setInput] = useState<string>('');
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const documentIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    documentIdRef.current = documentId;
+  }, [documentId]);
 
   const {
     messages,
@@ -67,13 +73,21 @@ export function Chat({
       api: '/api/chat',
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest({ messages, id, body }) {
+        const currentDocId = documentIdRef.current;
+
+        if (!currentDocId) {
+          toast({ type: 'error', description: 'Please upload a PDF first.' });
+          throw new Error('missing_document_id');
+        }
+
         return {
           body: {
+            ...body,
             id,
             message: messages.at(-1),
-            selectedChatModel: initialChatModel,
-            selectedVisibilityType: visibilityType,
-            ...body,
+            selectedChatModel: initialChatModel || 'chat-model',
+            selectedVisibilityType: visibilityType || 'private',
+            documentId: currentDocId,
           },
         };
       },
@@ -162,6 +176,8 @@ export function Chat({
               setMessages={setMessages}
               sendMessage={sendMessage}
               selectedVisibilityType={visibilityType}
+              setDocumentId={setDocumentId}
+              documentId={documentId}
             />
           )}
         </form>
@@ -182,6 +198,8 @@ export function Chat({
         votes={votes}
         isReadonly={isReadonly}
         selectedVisibilityType={visibilityType}
+        setDocumentId={setDocumentId}
+        documentId={documentId}
       />
     </>
   );

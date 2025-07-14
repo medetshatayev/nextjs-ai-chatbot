@@ -28,6 +28,7 @@ import { ArrowDown } from 'lucide-react';
 import { useScrollToBottom } from '@/hooks/use-scroll-to-bottom';
 import type { VisibilityType } from './visibility-selector';
 import type { Attachment, ChatMessage } from '@/lib/types';
+import { uploadPdf, downloadFile } from '@/lib/api';
 
 function PureMultimodalInput({
   chatId,
@@ -42,6 +43,8 @@ function PureMultimodalInput({
   sendMessage,
   className,
   selectedVisibilityType,
+  setDocumentId,
+  documentId,
 }: {
   chatId: string;
   input: string;
@@ -55,6 +58,8 @@ function PureMultimodalInput({
   sendMessage: UseChatHelpers<ChatMessage>['sendMessage'];
   className?: string;
   selectedVisibilityType: VisibilityType;
+  setDocumentId: Dispatch<SetStateAction<string | null>>;
+  documentId: string | null;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
@@ -109,17 +114,24 @@ function PureMultimodalInput({
   const [uploadQueue, setUploadQueue] = useState<Array<string>>([]);
 
   const submitForm = useCallback(() => {
+    if (!documentId) {
+      toast.error('Please upload a PDF before asking questions.');
+      return;
+    }
+
     window.history.replaceState({}, '', `/chat/${chatId}`);
 
     sendMessage({
       role: 'user',
       parts: [
-        ...attachments.map((attachment) => ({
-          type: 'file' as const,
-          url: attachment.url,
-          name: attachment.name,
-          mediaType: attachment.contentType,
-        })),
+        ...attachments
+          .filter((a) => a.contentType?.startsWith('image'))
+          .map((attachment) => ({
+            type: 'file' as const,
+            url: attachment.url,
+            name: attachment.name,
+            mediaType: attachment.contentType,
+          })),
         {
           type: 'text',
           text: input,
@@ -142,34 +154,26 @@ function PureMultimodalInput({
     sendMessage,
     setAttachments,
     setLocalStorageInput,
+    setDocumentId,
+    documentId,
     width,
     chatId,
   ]);
 
   const uploadFile = async (file: File) => {
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-      const response = await fetch('/api/files/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const { document_id, filename } = await uploadPdf(file);
 
-      if (response.ok) {
-        const data = await response.json();
-        const { url, pathname, contentType } = data;
+      // expose document id upwards so chat requests can include it
+      setDocumentId(document_id);
 
-        return {
-          url,
-          name: pathname,
-          contentType: contentType,
-        };
-      }
-      const { error } = await response.json();
-      toast.error(error);
-    } catch (error) {
-      toast.error('Failed to upload file, please try again!');
+      return {
+        url: downloadFile(document_id),
+        name: filename,
+        contentType: 'application/pdf',
+      };
+    } catch (error: any) {
+      toast.error(error?.message ?? 'Failed to upload file, please try again!');
     }
   };
 
@@ -298,6 +302,8 @@ function PureMultimodalInput({
 
             if (status !== 'ready') {
               toast.error('Please wait for the model to finish its response!');
+            } else if (!documentId) {
+              toast.error('Upload a PDF first.');
             } else {
               submitForm();
             }
@@ -317,6 +323,7 @@ function PureMultimodalInput({
             input={input}
             submitForm={submitForm}
             uploadQueue={uploadQueue}
+            documentId={documentId}
           />
         )}
       </div>
@@ -390,10 +397,12 @@ function PureSendButton({
   submitForm,
   input,
   uploadQueue,
+  documentId,
 }: {
   submitForm: () => void;
   input: string;
   uploadQueue: Array<string>;
+  documentId: string | null;
 }) {
   return (
     <Button
@@ -403,7 +412,9 @@ function PureSendButton({
         event.preventDefault();
         submitForm();
       }}
-      disabled={input.length === 0 || uploadQueue.length > 0}
+      disabled={
+        input.length === 0 || uploadQueue.length > 0 || !documentId
+      }
     >
       <ArrowUpIcon size={14} />
     </Button>
@@ -414,5 +425,6 @@ const SendButton = memo(PureSendButton, (prevProps, nextProps) => {
   if (prevProps.uploadQueue.length !== nextProps.uploadQueue.length)
     return false;
   if (prevProps.input !== nextProps.input) return false;
+  if (prevProps.documentId !== nextProps.documentId) return false;
   return true;
 });

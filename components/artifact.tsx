@@ -67,6 +67,8 @@ function PureArtifact({
   votes,
   isReadonly,
   selectedVisibilityType,
+  setDocumentId,
+  documentId,
 }: {
   chatId: string;
   input: string;
@@ -82,6 +84,8 @@ function PureArtifact({
   regenerate: UseChatHelpers<ChatMessage>['regenerate'];
   isReadonly: boolean;
   selectedVisibilityType: VisibilityType;
+  setDocumentId: Dispatch<SetStateAction<string | null>>;
+  documentId: string | null;
 }) {
   const { artifact, setArtifact, metadata, setMetadata } = useArtifact();
 
@@ -336,6 +340,8 @@ function PureArtifact({
                     className="bg-background dark:bg-muted"
                     setMessages={setMessages}
                     selectedVisibilityType={selectedVisibilityType}
+                    setDocumentId={setDocumentId}
+                    documentId={documentId}
                   />
                 </form>
               </div>

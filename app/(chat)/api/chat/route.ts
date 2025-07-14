@@ -1,13 +1,5 @@
-import {
-  convertToModelMessages,
-  createUIMessageStream,
-  JsonToSseTransformStream,
-  smoothStream,
-  stepCountIs,
-  streamText,
-} from 'ai';
+import { createUIMessageStream, JsonToSseTransformStream } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
-import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
 import {
   createStreamId,
   deleteChatById,
@@ -19,15 +11,8 @@ import {
 } from '@/lib/db/queries';
 import { convertToUIMessages, generateUUID } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
-import { createDocument } from '@/lib/ai/tools/create-document';
-import { updateDocument } from '@/lib/ai/tools/update-document';
-import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
-import { getWeather } from '@/lib/ai/tools/get-weather';
-import { isProductionEnvironment } from '@/lib/constants';
-import { myProvider } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
 import { postRequestBodySchema, type PostRequestBody } from './schema';
-import { geolocation } from '@vercel/functions';
 import {
   createResumableStreamContext,
   type ResumableStreamContext,
@@ -35,8 +20,9 @@ import {
 import { after } from 'next/server';
 import { ChatSDKError } from '@/lib/errors';
 import type { ChatMessage } from '@/lib/types';
-import type { ChatModel } from '@/lib/ai/models';
 import type { VisibilityType } from '@/components/visibility-selector';
+import { askQuestion, downloadFile } from '@/lib/api';
+import type { ChatModel } from '@/lib/ai/models';
 
 export const maxDuration = 60;
 
@@ -68,7 +54,8 @@ export async function POST(request: Request) {
   try {
     const json = await request.json();
     requestBody = postRequestBodySchema.parse(json);
-  } catch (_) {
+  } catch (err) {
+    console.error('POST /api/chat bad_request parse error', err);
     return new ChatSDKError('bad_request:api').toResponse();
   }
 
@@ -78,11 +65,13 @@ export async function POST(request: Request) {
       message,
       selectedChatModel,
       selectedVisibilityType,
+      documentId,
     }: {
       id: string;
       message: ChatMessage;
       selectedChatModel: ChatModel['id'];
       selectedVisibilityType: VisibilityType;
+      documentId: string;
     } = requestBody;
 
     const session = await auth();
@@ -124,15 +113,6 @@ export async function POST(request: Request) {
     const messagesFromDb = await getMessagesByChatId({ id });
     const uiMessages = [...convertToUIMessages(messagesFromDb), message];
 
-    const { longitude, latitude, city, country } = geolocation(request);
-
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
-    };
-
     await saveMessages({
       messages: [
         {
@@ -150,44 +130,48 @@ export async function POST(request: Request) {
     await createStreamId({ streamId, chatId: id });
 
     const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
-        const result = streamText({
-          model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
-          messages: convertToModelMessages(uiMessages),
-          stopWhen: stepCountIs(5),
-          experimental_activeTools:
-            selectedChatModel === 'chat-model-reasoning'
-              ? []
-              : [
-                  'getWeather',
-                  'createDocument',
-                  'updateDocument',
-                  'requestSuggestions',
-                ],
-          experimental_transform: smoothStream({ chunking: 'word' }),
-          tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
-          },
-          experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
-            functionId: 'stream-text',
-          },
-        });
+      execute: async ({ writer: dataStream }) => {
+        try {
+          // Extract plain text query from the user message
+          const textPart = message.parts.find((p) => p.type === 'text') as
+            | { type: 'text'; text: string }
+            | undefined;
 
-        result.consumeStream();
+          const queryText = textPart?.text ?? '';
 
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          }),
-        );
+          const { answer, sources } = await askQuestion({
+            query: queryText,
+            documentId,
+          });
+
+          // Build assistant message with answer and file attachments for sources
+          const assistantMessage: ChatMessage = {
+            id: generateUUID(),
+            role: 'assistant',
+            parts: [
+              { type: 'text', text: answer },
+              ...sources.map((src, idx) => ({
+                type: 'file' as const,
+                url: downloadFile(documentId),
+                name: `source-${idx + 1}.pdf`,
+                mediaType: 'application/pdf',
+              })),
+            ],
+          };
+
+          dataStream.write({
+            type: 'data-appendMessage',
+            data: JSON.stringify(assistantMessage),
+            transient: true,
+          });
+        } catch (error) {
+          console.error('askQuestion failed', error);
+          dataStream.write({
+            type: 'data-error',
+            data: 'Backend query failed.',
+            transient: true,
+          });
+        }
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
@@ -207,20 +191,27 @@ export async function POST(request: Request) {
       },
     });
 
-    const streamContext = getStreamContext();
-
-    if (streamContext) {
-      return new Response(
-        await streamContext.resumableStream(streamId, () =>
-          stream.pipeThrough(new JsonToSseTransformStream()),
-        ),
-      );
-    } else {
+    // Disable resumable streams to avoid potential issues
+    // const streamContext = getStreamContext();
+    // if (streamContext) {
+    //   return new Response(
+    //     await streamContext.resumableStream(streamId, () =>
+    //       stream.pipeThrough(new JsonToSseTransformStream()),
+    //     ),
+    //   );
+    // } else {
       return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
-    }
+    // }
+
   } catch (error) {
+    console.error('Error in POST /api/chat:', error);
     if (error instanceof ChatSDKError) {
       return error.toResponse();
+    } else {
+      return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
   }
 }
